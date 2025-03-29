@@ -1,9 +1,277 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Feb 25 20:10:06 2022
 
-@author: 24412
-"""
+import math
+import os
+import argparse
+
+import matplotlib.pyplot as plt
+
+import torch
+import torch.nn as nn
+import numpy as np
+import torch.nn.functional as F
+from pytorch_i3d import InceptionI3d
+
+import cv2
+from transformers import pipeline
+
+import language
+from dotenv import load_dotenv
+from itertools import chain
+import pickle
+
+load_dotenv("posts/nlp/.env", override=True)
+
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+parser = argparse.ArgumentParser()
+parser.add_argument('-mode', type=str, help='rgb or flow')
+parser.add_argument('-save_model', type=str)
+parser.add_argument('-root', type=str)
+
+args = parser.parse_args()
+
+def load_rgb_frames_from_video():
+    vidcap = cv2.VideoCapture('/content/samplevideo.mp4')
+
+    frames = []
+    offset = 0
+    text = " "
+    batch = 40
+    text_list = []
+    sentence = ""
+    text_count = 0
+
+    while True:
+        ret, frame1 = vidcap.read()
+        offset += 1
+        font = cv2.FONT_HERSHEY_TRIPLEX
+
+        if ret:
+            w, h, c = frame1.shape
+            sc = 224 / w
+            sx = 224 / h
+            frame = cv2.resize(frame1, dsize=(0, 0), fx=sx, fy=sc)
+            frame1 = cv2.resize(frame1, dsize=(1280, 720))
+            frame = (frame / 255.) * 2 - 1
+
+            if offset > batch:
+                frames.pop(0)
+                frames.append(frame)
+            else:
+                frames.append(frame)
+
+            if offset >= batch and offset % 20 == 0:
+                text = run_on_tensor(torch.from_numpy((np.asarray(frames, dtype=np.float32)).transpose([3, 0, 1, 2])))
+                if text != " ":
+                    text_count += 1
+                    if not text_list or text_list[-1] != text:
+                        text_list.append(text)
+                    if text_count > 2:
+                        sentence = nlp("translate gloss to sentence: " + ' '.join(text_list), max_length=30)[0]['generated_text']
+
+            print(f"[Frame {offset}] Sentence: {sentence}")
+
+            if len(text_list) > 10:
+                text_list = text_list[-10:]
+        else:
+            break
+
+    vidcap.release()
+
+
+def load_model(weights, num_classes):
+    global i3d
+    i3d = InceptionI3d(400, in_channels=3)
+    i3d.replace_logits(num_classes)
+    i3d.load_state_dict(torch.load(weights))
+    i3d.cuda()
+    i3d = nn.DataParallel(i3d)
+    i3d.eval()
+
+    global nlp
+    nlp = pipeline("text2text-generation", model="t5-small")
+
+    load_rgb_frames_from_video()
+
+
+def run_on_tensor(ip_tensor):
+    ip_tensor = ip_tensor[None, :].cuda()
+    t = ip_tensor.shape[2]
+    per_frame_logits = i3d(ip_tensor)
+    predictions = F.upsample(per_frame_logits, t, mode='linear')
+    predictions = predictions.transpose(2, 1)
+    out_labels = np.argsort(predictions.cpu().detach().numpy()[0])
+    arr = predictions.cpu().detach().numpy()[0]
+
+    confidence = float(max(F.softmax(torch.from_numpy(arr[0]), dim=0)))
+    print(confidence)
+    print(wlasl_dict[out_labels[0][-1]])
+
+    return wlasl_dict[out_labels[0][-1]] if confidence > 0.5 else " "
+
+
+def create_WLASL_dictionary():
+    global wlasl_dict
+    wlasl_dict = {}
+    with open('preprocess/wlasl_class_list.txt') as file:
+        for line in file:
+            split_list = line.split()
+            key = int(split_list[0])
+            value = ' '.join(split_list[1:])
+            wlasl_dict[key] = value
+
+
+if __name__ == '__main__':
+    mode = 'rgb'
+    num_classes = 2000
+    save_model = './checkpoints/'
+    root = '../../../data/WLASL2000'
+    train_split = '../../preprocess/nslt_{}.json'.format(num_classes)
+    weights = 'archived/asl2000/FINAL_nslt_2000_iters=5104_top1=32.48_top5=57.31_top10=66.31.pt'
+
+    create_WLASL_dictionary()
+    load_model(weights, num_classes)
+
+### webcam ver ###
+'''
+# -*- coding: utf-8 -*-
+
+import math
+import os
+import argparse
+
+import matplotlib.pyplot as plt
+
+import torch
+import torch.nn as nn
+import numpy as np
+import torch.nn.functional as F
+from pytorch_i3d import InceptionI3d
+
+import cv2
+from transformers import pipeline
+
+import language
+from dotenv import load_dotenv
+from itertools import chain
+import pickle
+
+load_dotenv("posts/nlp/.env", override=True)
+
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+parser = argparse.ArgumentParser()
+parser.add_argument('-mode', type=str, help='rgb or flow')
+parser.add_argument('-save_model', type=str)
+parser.add_argument('-root', type=str)
+
+args = parser.parse_args()
+
+def load_rgb_frames_from_video():
+    vidcap = cv2.VideoCapture('/content/samplevideo.mp4')
+
+    frames = []
+    offset = 0
+    text = " "
+    batch = 40
+    text_list = []
+    sentence = ""
+    text_count = 0
+
+    while True:
+        ret, frame1 = vidcap.read()
+        offset += 1
+        font = cv2.FONT_HERSHEY_TRIPLEX
+
+        if ret:
+            w, h, c = frame1.shape
+            sc = 224 / w
+            sx = 224 / h
+            frame = cv2.resize(frame1, dsize=(0, 0), fx=sx, fy=sc)
+            frame1 = cv2.resize(frame1, dsize=(1280, 720))
+            frame = (frame / 255.) * 2 - 1
+
+            if offset > batch:
+                frames.pop(0)
+                frames.append(frame)
+            else:
+                frames.append(frame)
+
+            if offset >= batch and offset % 20 == 0:
+                text = run_on_tensor(torch.from_numpy((np.asarray(frames, dtype=np.float32)).transpose([3, 0, 1, 2])))
+                if text != " ":
+                    text_count += 1
+                    if not text_list or text_list[-1] != text:
+                        text_list.append(text)
+                    if text_count > 2:
+                        sentence = nlp("translate gloss to sentence: " + ' '.join(text_list), max_length=30)[0]['generated_text']
+
+            print(f"[Frame {offset}] Sentence: {sentence}")
+
+            if len(text_list) > 10:
+                text_list = text_list[-10:]
+        else:
+            break
+
+    vidcap.release()
+
+
+def load_model(weights, num_classes):
+    global i3d
+    i3d = InceptionI3d(400, in_channels=3)
+    i3d.replace_logits(num_classes)
+    i3d.load_state_dict(torch.load(weights))
+    i3d.cuda()
+    i3d = nn.DataParallel(i3d)
+    i3d.eval()
+
+    global nlp
+    nlp = pipeline("text2text-generation", model="t5-small")
+
+    load_rgb_frames_from_video()
+
+
+def run_on_tensor(ip_tensor):
+    ip_tensor = ip_tensor[None, :].cuda()
+    t = ip_tensor.shape[2]
+    per_frame_logits = i3d(ip_tensor)
+    predictions = F.upsample(per_frame_logits, t, mode='linear')
+    predictions = predictions.transpose(2, 1)
+    out_labels = np.argsort(predictions.cpu().detach().numpy()[0])
+    arr = predictions.cpu().detach().numpy()[0]
+
+    confidence = float(max(F.softmax(torch.from_numpy(arr[0]), dim=0)))
+    print(confidence)
+    print(wlasl_dict[out_labels[0][-1]])
+
+    return wlasl_dict[out_labels[0][-1]] if confidence > 0.5 else " "
+
+
+def create_WLASL_dictionary():
+    global wlasl_dict
+    wlasl_dict = {}
+    with open('preprocess/wlasl_class_list.txt') as file:
+        for line in file:
+            split_list = line.split()
+            key = int(split_list[0])
+            value = ' '.join(split_list[1:])
+            wlasl_dict[key] = value
+
+
+if __name__ == '__main__':
+    mode = 'rgb'
+    num_classes = 2000
+    save_model = './checkpoints/'
+    root = '../../../data/WLASL2000'
+    train_split = '../../preprocess/nslt_{}.json'.format(num_classes)
+    weights = 'archived/asl2000/FINAL_nslt_2000_iters=5104_top1=32.48_top5=57.31_top10=66.31.pt'
+
+    create_WLASL_dictionary()
+    load_model(weights, num_classes)
+
+'''
+'''
 
 import math
 import os
@@ -241,6 +509,4 @@ if __name__ == '__main__':
     create_WLASL_dictionary()
     
     load_model(weights, num_classes)
-        
-    
-    
+'''        
